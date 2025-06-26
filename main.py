@@ -7,7 +7,8 @@ from langgraph.prebuilt import ToolNode
 from IPython.display import Image, display
 from langchain_core.runnables.graph import MermaidDrawMethod
 from state.state import AgentState
-
+from nodes.classifier import classifier_node
+from prompts.system import SYSTEM_PROMPT
 
 # Import your tools
 from tools.booking_tool import booking_lookup_tool, booking_create_tool, payment_update_tool
@@ -39,19 +40,6 @@ tools = [
 llm_with_tools = llm.bind_tools(tools=tools)
 
 
-# System message to define the agent's role
-SYSTEM_MESSAGE = """
-You are a helpful travel booking assistant. You can help users with:
-
-1. 🔍 **Search for travel information** (hotels, flights, attractions)
-2. 📋 **Look up existing bookings** by booking ID
-3. 🏨 **Create new hotel bookings**
-4. 💳 **Update payment status** for bookings
-5. ❓ **Answer FAQ questions** about hotels and travel
-
-Always be polite, helpful, and provide clear information. When creating bookings, make sure to collect all necessary details (hotel name, location, dates, price).
-"""
-
 
 def chatbot(state: AgentState):
     """Main agent function to handle user messages and invoke the LLM."""
@@ -59,23 +47,68 @@ def chatbot(state: AgentState):
     
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [
-            SystemMessage(content=SYSTEM_MESSAGE)
+            SystemMessage(content=SYSTEM_PROMPT)
         ] + messages
     
     response = llm_with_tools.invoke(messages)
-    print(f"🤖 Assistant: {response.content}")
     return {"messages": [response]}
 
 
 def should_continue(state: AgentState):
-    """Check if we need to continue to tools or end."""
+    """Enhanced routing based on classification and confidence."""
     messages = state.get("messages", [])
+    classification = state.get("classification", "unknown")
+    confidence = state.get("confidence", 0.0)
+    
+    if not messages:
+        return END
+    
     last_message = messages[-1]
     
     # Check if model wants to use tools
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        print(f"🔧 Using tools: {[tool.get('name', 'unknown') for tool in last_message.tool_calls]}")
+        return "tool_node"
+    
+    # Route based on classification and confidence
+    if confidence < 0.3:
+        print("🤔 Low confidence in classification, asking for clarification.")
+        return "clarification"
+    
+    
+    if classification in ["booking_lookup", "booking_create", "payment_update", 
+                         "search_hotels", "search_flights", "search_general", "faq_question"]:
+        print(f"🔄 Routing to tool node for classification: {classification}")
         return "tool_node"
     return END
+
+
+def clarification_node(state: AgentState):
+    """Provide helpful clarification when confidence is low."""
+    clarification_message = AIMessage(content="""
+🤔 I'm not quite sure what you're looking for. Let me help you! 
+
+How may I make your travel experience easy? I can assist you with:
+
+🔍 **Search & Discovery:**
+- Find hotels in your destination
+- Search for flights
+- Discover attractions and activities
+
+📋 **Booking Management:**
+- Look up your existing bookings
+- Create new hotel reservations
+- Update payment status
+
+❓ **Travel Information:**
+- Answer questions about hotel policies
+- Provide travel tips and recommendations
+- Help with general travel inquiries
+
+Please let me know what you'd like to do, and I'll be happy to help! 🌍
+    """.strip())
+    
+    return {"messages": [clarification_message]}
 
 
 
@@ -86,38 +119,45 @@ tool_node = ToolNode(tools=tools)
 
 # Define the state graph for the agent
 graph = StateGraph(AgentState)
+
+# All nodes
 graph.add_node("chatbot", chatbot)
+graph.add_node("classifier", classifier_node)
 graph.add_node("tool_node", tool_node)
+graph.add_node("clarification", clarification_node) 
 
+# Add edges
 graph.add_edge(START, "chatbot")
+graph.add_edge("chatbot", "classifier")
+graph.add_edge("tool_node", "chatbot")
+graph.add_edge("clarification", "chatbot")  
 
+# Add conditional edges from classifier
 graph.add_conditional_edges(
-    "chatbot",
+    "classifier",
     should_continue,
     {
         "tool_node": "tool_node",
+        "clarification": "clarification",  # New clarification route
         END: END
-    })
-
-
-graph.add_edge("tool_node", "chatbot")
-
+    }
+)
 
 app = graph.compile(checkpointer=memory)
 
 
 # Graph visualization
-def visualize_graph():
-    """Visualize the state graph using Mermaid."""
-    display(
-        Image(
-            app.get_graph().draw_mermaid_png(
-            draw_method=MermaidDrawMethod.API
-         )
-        )
-    )
+# def visualize_graph():
+#     """Visualize the state graph using Mermaid."""
+#     display(
+#         Image(
+#             app.get_graph().draw_mermaid_png(
+#             draw_method=MermaidDrawMethod.API
+#          )
+#         )
+#     )
 
-visualize_graph()    
+# visualize_graph()    
 
 
 def run_agent():

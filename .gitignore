@@ -6,3 +6,6 @@ database/__pycache__/
 rag/__pycache__/
 tools/__pycache__/
 search/__pycache__/
+memory/__pycache__/
+memory/database/__pycache__/
+prompts/__pycache__
